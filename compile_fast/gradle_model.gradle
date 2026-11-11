@@ -1,0 +1,51 @@
+// Build-system adapter only; verification/indexing/service logic lives in Python.
+import groovy.json.JsonOutput
+import org.gradle.api.artifacts.component.ProjectComponentIdentifier
+
+gradle.projectsEvaluated {
+    rootProject.tasks.register('compileFastExportModel') {
+        doLast {
+            def modules = []
+            def reasons = []
+            rootProject.allprojects.each { p ->
+                def sourceSets = p.extensions.findByName('sourceSets')
+                def task = p.tasks.findByName('compileJava')
+                if (sourceSets == null || task == null) return
+                def main = sourceSets.findByName('main')
+                def dependencies = []
+                def external = []
+                p.configurations.getByName('compileClasspath').incoming.artifacts.artifacts.each { artifact ->
+                    def component = artifact.id.componentIdentifier
+                    if (component instanceof ProjectComponentIdentifier) {
+                        dependencies.add(component.projectPath)
+                    } else {
+                        external.add(artifact.file.absolutePath)
+                    }
+                }
+                def processors = task.options.annotationProcessorPath
+                if (processors != null && !processors.files.empty) reasons.add("${p.path}: annotation processors require L3")
+                if (!task.options.compilerArgs.empty) reasons.add("${p.path}: custom compiler args require L3")
+                if (!task.options.compilerArgumentProviders.empty) reasons.add("${p.path}: compiler argument providers require L3")
+                if (!main.java.includes.empty || !main.java.excludes.empty) reasons.add("${p.path}: source filters require L3")
+                task.taskDependencies.getDependencies(task).each { dependency ->
+                    def reactorJar = dependency instanceof org.gradle.api.tasks.bundling.Jar &&
+                        dependencies.contains(dependency.project.path) && dependency.includes.empty && dependency.excludes.empty
+                    if (!(dependency instanceof org.gradle.api.tasks.compile.JavaCompile) && !reactorJar) {
+                        reasons.add("${p.path}: prerequisite ${dependency.path} requires L3")
+                    }
+                }
+                def release = task.options.release.present ? task.options.release.get().toString() : null
+                modules.add([id: p.path, sourceRoots: main.java.srcDirs.collect { it.absolutePath },
+                    testSourceRoots: sourceSets.findByName('test')?.java?.srcDirs?.collect { it.absolutePath } ?: [],
+                    dependencies: dependencies.unique(), classpath: external.unique(), release: release,
+                    source: task.sourceCompatibility, target: task.targetCompatibility,
+                    encoding: task.options.encoding ?: 'UTF-8', debug: task.options.debug,
+                    annotationProcessing: false,
+                    javaHome: task.javaCompiler.present ? task.javaCompiler.get().metadata.installationPath.asFile.absolutePath : null])
+            }
+            if (modules.empty) reasons.add('No JavaCompile main source sets found')
+            def output = new File(System.getProperty('compileFast.output'))
+            output.setText(JsonOutput.toJson([modules: modules, unsupportedReasons: reasons.unique()]), 'UTF-8')
+        }
+    }
+}

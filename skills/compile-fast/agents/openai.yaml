@@ -1,0 +1,4 @@
+interface:
+  display_name: "Compile Fast"
+  short_description: "Validate Java edits with Python and real javac diagnostics"
+  default_prompt: "Use $compile-fast to verify my Java changes and report compilation diagnostics."
